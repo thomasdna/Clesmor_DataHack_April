@@ -1,0 +1,337 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{titlesec}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!45!black,
+  urlcolor=blue!45!black,
+  citecolor=blue!45!black
+}
+
+\setlist[itemize]{leftmargin=*, itemsep=2pt, topsep=4pt}
+\setlist[enumerate]{leftmargin=*, itemsep=2pt, topsep=4pt}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.6em}{}
+
+\title{Expansion Copilot (Sydney Gyms)\\\large Demo Build Report (Pre-Transport)}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Tagline}: Turn place data into smarter expansion decisions.\\
+\textbf{Core question}: \emph{Where should I open my next gym in Sydney, and why?}\\
+\textbf{Scope}: Sydney, Australia \textbullet\ Boutique / mid-market gyms \textbullet\ Decision support (not prediction)
+
+\bigskip
+\hrule
+\bigskip
+
+\section{What we built (so far)}
+
+\subsection{Product}
+\begin{itemize}
+  \item A Streamlit MVP that:
+  \begin{itemize}
+    \item shows \textbf{ranked candidate areas}
+    \item visualizes them on a map (color = score)
+    \item provides a \textbf{``Why here?''} explanation panel with transparent drivers
+    \item supports \textbf{Compare} for 2--3 areas
+    \item includes \textbf{guardrails} and \textbf{judge-mode presets} for demo stability
+  \end{itemize}
+\end{itemize}
+
+\subsection{Data + feature pipeline (offline, reproducible)}
+\begin{itemize}
+  \item Reads Foursquare Open Source Places (Parquet) subset for Sydney.
+  \item Builds an explainable feature table aggregated by area (H3).
+  \item Computes an Opportunity Score with a transparent weighted formula.
+  \item Writes \textbf{processed artifacts} consumed by the app (no recompute in the UI).
+\end{itemize}
+
+\section{Repository structure (relevant parts)}
+\begin{itemize}
+  \item \texttt{app/streamlit\_app.py}: current demo app (single-file Streamlit app, upgraded with demo controls)
+  \item \texttt{app/app.py} + \texttt{src/app/*}: modular Streamlit MVP (cleaner structure, same data contract)
+  \item \texttt{src/features/build\_opportunity\_features.py}: feature engineering for area-level metrics
+  \item \texttt{src/scoring/opportunity\_score.py}: scoring math (normalization, weights, breakdown)
+  \item \texttt{scripts/run\_build\_features.py}: produces processed outputs
+  \item \texttt{data/interim/}: Sydney subset + cleaned categories used to build features
+  \item \texttt{data/processed/}: feature table + ranked areas (app reads these)
+\end{itemize}
+
+\section{Data inputs (pre-transport)}
+
+\subsection{Foursquare Open Source Places (Sydney subset)}
+\textbf{Inputs (from prior tasks):}
+\begin{itemize}
+  \item \texttt{data/interim/places\_sydney.parquet}
+  \item \texttt{data/interim/categories\_clean.parquet}
+\end{itemize}
+
+\noindent We explicitly designed the pipeline to \textbf{not assume optional columns exist}. Where columns are missing (e.g., refresh timestamps), we use safe fallbacks or leave placeholders.
+
+\section{Core feature engineering (area-level)}
+\noindent We aggregate to an \textbf{area unit} (v1: H3 at resolution 8).
+
+\subsection{Place $\rightarrow$ role flags (competitor / complement / excluded)}
+We classify each place into business roles using a transparent gym taxonomy:
+\begin{itemize}
+  \item competitors: gyms / yoga / pilates / martial arts (configurable)
+  \item complements: healthy cafes, physio, wellness, parks, sports goods, etc.
+  \item exclusions: categories that should not count toward active commercial ecosystem
+\end{itemize}
+
+\noindent\textbf{Implementation}: \texttt{src/features/category\_mapping.py}\\
+\textbf{Key design constraint}: explode/join category IDs \textbf{without inflating places}.
+
+\subsubsection*{Method}
+\begin{enumerate}
+  \item explode \texttt{category\_ids} to one row per (\texttt{place\_id}, \texttt{category\_id})
+  \item join to cleaned categories table for \texttt{category\_name} and \texttt{category\_label}
+  \item keyword-match into flags
+  \item group back to \texttt{place\_id} using \texttt{any()} for boolean flags
+\end{enumerate}
+
+\noindent\textbf{Output per place:}
+\begin{itemize}
+  \item \texttt{is\_competitor}, \texttt{is\_complementary}, \texttt{is\_commercial\_other}, \texttt{is\_excluded}
+  \item \texttt{unique\_category\_count} (per place, later summed by area)
+\end{itemize}
+
+\subsection{Derived POI Data Quality Score (0..1)}
+\noindent\textbf{Implementation}: \texttt{src/features/data\_quality.py}
+
+\bigskip
+\noindent We compute a transparent POI score, clamped to $[0, 1]$, based on field presence.
+
+\paragraph{Base score}
+\[
+q = 1.0
+\]
+
+\paragraph{Penalties (applied if columns exist)}
+\begin{itemize}
+  \item missing coords: $0.40$
+  \item missing name: $0.20$
+  \item missing category: $0.15$
+  \item unresolved flags present: $0.25$
+\end{itemize}
+
+\paragraph{Formula}
+Let indicator functions evaluate to 1 when true, else 0:
+\[
+q = 1
+ - 0.40\cdot \mathbb{1}[\text{lat or lon missing}]
+ - 0.20\cdot \mathbb{1}[\text{name missing}]
+ - 0.15\cdot \mathbb{1}[\text{category missing}]
+ - 0.25\cdot \mathbb{1}[\text{unresolved\_flags present}]
+\]
+
+\paragraph{Clamp}
+\[
+q := \min(1, \max(0, q))
+\]
+
+\paragraph{Area-level data quality}
+\[
+\text{mean\_data\_quality\_score} = \frac{1}{N}\sum_{i=1}^{N} q_i
+\]
+
+\subsection{Active POIs}
+In v1, we treat ``active'' as:
+\begin{itemize}
+  \item not excluded by taxonomy (\texttt{\textasciitilde is\_excluded})
+  \item (optionally) not closed if \texttt{date\_closed} exists (not currently in our canonical inputs)
+\end{itemize}
+
+\noindent So:
+\[
+\text{is\_active} = \neg \text{is\_excluded}
+\]
+
+\subsection{Aggregates per area (counts)}
+\noindent\textbf{Implementation}: \texttt{src/features/build\_opportunity\_features.py}
+
+\noindent For each \texttt{area\_id} we compute:
+\begin{itemize}
+  \item \texttt{total\_poi\_count}
+  \item \texttt{active\_poi\_count}
+  \item \texttt{competitor\_count}
+  \item \texttt{complementary\_count}
+  \item \texttt{commercial\_other\_count}
+  \item \texttt{unique\_category\_count} (summed)
+  \item \texttt{mean\_data\_quality\_score} (mean)
+\end{itemize}
+
+\subsection{Derived area features (transparent formulas)}
+We compute the core proxies (with $\varepsilon = 1.0$ for numerical stability).
+
+\paragraph{Competitor density proxy}
+\[
+\text{competitor\_density\_proxy}
+=
+\frac{\text{competitor\_count}}{\text{active\_poi\_count} + \varepsilon}
+\]
+
+\paragraph{Complementarity ratio}
+\[
+\text{complementarity\_ratio}
+=
+\frac{\text{complementary\_count}}{\text{active\_poi\_count} + \varepsilon}
+\]
+
+\paragraph{Commercial activity proxy}
+\[
+\text{commercial\_activity\_proxy} = \text{active\_poi\_count}
+\]
+
+\paragraph{Saturation proxy}
+\[
+\text{saturation\_proxy}
+=
+\text{competitor\_density\_proxy}\cdot (1 - \text{complementarity\_ratio})
+\]
+
+\noindent\texttt{recent\_refresh\_share} is currently a placeholder because it depends on refresh timestamp columns that may not exist in the dataset we’re using.
+
+\section{Opportunity Score (math + implementation)}
+\noindent\textbf{Implementation}: \texttt{src/scoring/opportunity\_score.py}
+
+\subsection{Stabilization (log1p)}
+For heavy-tailed signals we apply log transforms:
+\begin{itemize}
+  \item $\texttt{commercial\_activity\_proxy\_log}=\log(1+\texttt{commercial\_activity\_proxy})$
+  \item $\texttt{diversity\_log}=\log(1+\texttt{unique\_category\_count})$
+  \item $\texttt{competition\_log}=\log(1+\texttt{competitor\_density\_proxy})$
+  \item $\texttt{saturation\_log}=\log(1+\texttt{saturation\_proxy})$
+\end{itemize}
+
+\subsection{Normalization (safe min--max)}
+For each signal $x$:
+\[
+n(x)=
+\begin{cases}
+0 & \text{if } \max(x)-\min(x) \le 10^{-9}\\
+\frac{x-\min(x)}{\max(x)-\min(x)} & \text{otherwise}
+\end{cases}
+\]
+
+\subsection{Weighted sum (transparent)}
+Default weights (\texttt{OpportunityWeights}):
+\begin{itemize}
+  \item complementarity: $+1.2$
+  \item commercial activity: $+0.8$
+  \item diversity: $+0.6$
+  \item direct competition: $-1.0$
+  \item saturation: $-0.7$
+  \item data quality: $+0.5$
+\end{itemize}
+
+\noindent Let normalized features be:
+\begin{itemize}
+  \item $n_c$ = \texttt{n\_complementarity}
+  \item $n_a$ = \texttt{n\_activity}
+  \item $n_d$ = \texttt{n\_diversity}
+  \item $n_k$ = \texttt{n\_competition}
+  \item $n_s$ = \texttt{n\_saturation}
+  \item $n_q$ = \texttt{n\_quality}
+\end{itemize}
+
+\noindent Then:
+\[
+\text{OpportunityScore}
+=
+1.2n_c
++0.8n_a
++0.6n_d
+-1.0n_k
+-0.7n_s
++0.5n_q
+\]
+
+\subsection{Reasons (built-in explanation function)}
+We generate \texttt{reasons\_top3} via \texttt{top\_reasons(row)}:
+\begin{itemize}
+  \item compute contribution components (e.g., \texttt{score\_complementarity}, \texttt{score\_activity}, etc.)
+  \item return the top 3 labels by magnitude
+\end{itemize}
+This is deterministic and demo-safe (no LLM dependency).
+
+\section{Guardrails (demo stability + honesty)}
+\noindent In \texttt{scripts/run\_build\_features.py} we apply:
+\begin{itemize}
+  \item \texttt{active\_poi\_count >= 200} to prevent tiny cells dominating normalization.
+\end{itemize}
+
+\noindent In the Streamlit app we also expose:
+\begin{itemize}
+  \item minimum active POIs
+  \item minimum mean data quality
+\end{itemize}
+
+\noindent And we label outputs as \textbf{decision support}, not revenue/demand forecasting.
+
+\section{Processed outputs (what the app reads)}
+\noindent Produced by \texttt{scripts/run\_build\_features.py}:
+\begin{itemize}
+  \item \texttt{data/processed/sydney\_area\_features.parquet}
+  \item \texttt{data/processed/sydney\_ranked\_areas.parquet}
+  \item \texttt{data/exports/top\_ranked\_areas.csv}
+  \item docs previews:
+  \begin{itemize}
+    \item \texttt{docs/feature\_summary.md}
+    \item \texttt{docs/top\_areas\_preview.md}
+  \end{itemize}
+\end{itemize}
+
+\noindent The Streamlit demo is designed to \textbf{prefer precomputed ranked outputs} for performance.
+
+\section{Streamlit MVP (demo behavior)}
+
+\subsection{Required sections implemented}
+\begin{itemize}
+  \item Landing/setup panel (Sydney + Gym fixed for v1)
+  \item Opportunity map (tooltip shows score drivers)
+  \item Top candidates panel (table + pinning)
+  \item ``Why this location?'' (metrics + narrative + examples)
+  \item Compare mode (2--3 areas)
+  \item Demo narrative mode (limitations + how score works)
+\end{itemize}
+
+\subsection{Judge-mode enhancements}
+\begin{itemize}
+  \item Judge Mode toggle + hero buttons (Map / Why / Compare)
+  \item Stable presets for top\_k and guardrails
+  \item Clear closing line: \emph{Businesses do not need more map data. They need fewer bad location decisions.}
+\end{itemize}
+
+\section{What changes when we add transport data (not implemented yet)}
+Transport data would add an \textbf{accessibility feature} (not demand):
+\begin{itemize}
+  \item \texttt{transit\_access\_score} per area (0..1), derived from station entrances / stops density and proximity.
+\end{itemize}
+
+\noindent It would enter the score as a new positive term:
+\[
+\text{OpportunityScore}_{new}
+= \text{OpportunityScore} + w_t\cdot n(\text{transit\_access\_score})
+\]
+
+\noindent Where $w_t$ is a modest weight (e.g., 0.3--0.7) so it acts as a tie-breaker and improves ``Why here?'' defensibility without overpowering the ecosystem logic.
+
+\end{document}
+

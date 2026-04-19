@@ -1,0 +1,37 @@
+{
+  "path": "data/au_places.parquet",
+  "n_cols": 6,
+  "columns": [
+    "fsq_place_id",
+    "name",
+    "latitude",
+    "longitude",
+    "country",
+    "fsq_category_ids"
+  ],
+  "dtypes": {
+    "fsq_place_id": "String",
+    "name": "String",
+    "latitude": "Float64",
+    "longitude": "Float64",
+    "country": "String",
+    "fsq_category_ids": "List(String)"
+  },
+  "field_presence": {
+    "latitude": true,
+    "longitude": true,
+    "country": true,
+    "locality": false,
+    "region": false,
+    "postcode": false,
+    "date_refreshed": false,
+    "date_closed": false,
+    "fsq_category_ids": true,
+    "fsq_category_labels": false,
+    "unresolved_flags": false,
+    "geom": false,
+    "bbox": false,
+    "confidence": false,
+    "confidence_score": false
+  }
+}

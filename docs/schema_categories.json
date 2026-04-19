@@ -1,0 +1,49 @@
+{
+  "path": "data/categories.parquet",
+  "n_cols": 16,
+  "columns": [
+    "category_id",
+    "category_level",
+    "category_name",
+    "category_label",
+    "level1_category_id",
+    "level1_category_name",
+    "level2_category_id",
+    "level2_category_name",
+    "level3_category_id",
+    "level3_category_name",
+    "level4_category_id",
+    "level4_category_name",
+    "level5_category_id",
+    "level5_category_name",
+    "level6_category_id",
+    "level6_category_name"
+  ],
+  "dtypes": {
+    "category_id": "String",
+    "category_level": "Int32",
+    "category_name": "String",
+    "category_label": "String",
+    "level1_category_id": "String",
+    "level1_category_name": "String",
+    "level2_category_id": "String",
+    "level2_category_name": "String",
+    "level3_category_id": "String",
+    "level3_category_name": "String",
+    "level4_category_id": "String",
+    "level4_category_name": "String",
+    "level5_category_id": "String",
+    "level5_category_name": "String",
+    "level6_category_id": "String",
+    "level6_category_name": "String"
+  },
+  "field_presence": {
+    "category_id": true,
+    "category_name": true,
+    "category_label": true,
+    "level1_category_id": true,
+    "level1_category_name": true,
+    "level2_category_id": true,
+    "level2_category_name": true
+  }
+}
